@@ -26,16 +26,16 @@ jobs:
             }
             const issueNumber = match[1]
 
-            // 3) Configurações
-            const orgLogin = "GabrielS-Nogueira"
+            // 3) Configurações - agora usando user em vez de organization
+            const userLogin = "GabrielS-Nogueira"
             const projectNumber = 1
             const statusFieldName = "Status"
             const desiredOptionName = "In Review"
 
-            // 4) Query GraphQL para obter informações do projeto
+            // 4) Query GraphQL modificada para projetos de usuário
             const query = `
-              query($org: String!, $projectNumber: Int!) {
-                organization(login: $org) {
+              query($user: String!, $projectNumber: Int!) {
+                user(login: $user) {
                   projectV2(number: $projectNumber) {
                     id
                     fields(first: 20) {
@@ -68,18 +68,18 @@ jobs:
             `
 
             const result = await github.graphql(query, {
-              org: orgLogin,
+              user: userLogin,
               projectNumber: projectNumber
             })
 
             // 5) Extrair dados do JSON
-            const projectV2 = result.organization.projectV2
+            const projectV2 = result.user.projectV2
             if (!projectV2) {
-              console.log(`Projeto #${projectNumber} não encontrado na org ${orgLogin}.`)
+              console.log(`Projeto #${projectNumber} não encontrado para o usuário ${userLogin}.`)
               return
             }
 
-            // Achar o item que corresponde à issue #X
+            // Restante do código permanece igual...
             const projectItem = projectV2.items.nodes.find(item => {
               if (item.content?.__typename === "Issue") {
                 return item.content.number == issueNumber
@@ -94,7 +94,6 @@ jobs:
 
             const itemId = projectItem.id
 
-            // Achar o campo 'Status'
             const statusField = projectV2.fields.nodes.find(f => f.name === statusFieldName)
             if (!statusField) {
               console.log(`Campo "${statusFieldName}" não encontrado no projeto.`)
@@ -102,7 +101,6 @@ jobs:
             }
             const statusFieldId = statusField.id
 
-            // Achar a opção desejada
             const desiredOption = statusField.options.find(opt => opt.name === desiredOptionName)
             if (!desiredOption) {
               console.log(`Opção "${desiredOptionName}" não existe no campo "${statusFieldName}".`)
@@ -110,7 +108,6 @@ jobs:
             }
             const desiredOptionId = desiredOption.id
 
-            // 6) Mutation GraphQL para atualizar o valor do campo
             const mutation = `
               mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
                 updateProjectV2ItemFieldValue(
