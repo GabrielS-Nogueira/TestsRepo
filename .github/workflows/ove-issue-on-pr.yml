@@ -50,7 +50,7 @@ jobs:
                         }
                       }
                     }
-                    items(first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
+                    items(first: 100) {
                       nodes {
                         id
                         content {
