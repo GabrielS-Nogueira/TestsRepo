@@ -18,25 +18,54 @@ jobs:
             // 1) Capturar o corpo do Pull Request
             const prBody = context.payload.pull_request.body || ""
 
-            // 2) Procurar se há algo tipo "Close #10", "Closes #10", "Fixes #20", etc.
+            // 2) Procurar referência de issue
             const match = prBody.match(/\b(?:close|closes|fix|fixes|resolve|resolves)\s+#(\d+)/i)
             if (!match) {
-              console.log("Nenhuma referência de fechamento de issue foi encontrada no corpo do PR.")
+              console.log("Nenhuma referência de fechamento de issue encontrada.")
               return
             }
             const issueNumber = match[1]
 
-            // 3) Configurações - agora usando user em vez de organization
+            // 3) Configurações
             const userLogin = "GabrielS-Nogueira"
-            const projectNumber = 1
+            const projectTitle = "Projeto teste workflow" // Nome do seu projeto
             const statusFieldName = "Status"
             const desiredOptionName = "In Review"
 
-            // 4) Query GraphQL modificada para projetos de usuário
-            const query = `
-              query($user: String!, $projectNumber: Int!) {
+            // 4) Primeiro listar todos projetos para encontrar o correto
+            const listQuery = `
+              query($user: String!) {
                 user(login: $user) {
-                  projectV2(number: $projectNumber) {
+                  projectsV2(first: 20) {
+                    nodes {
+                      number
+                      title
+                      id
+                    }
+                  }
+                }
+              }
+            `
+
+            const listResult = await github.graphql(listQuery, { user: userLogin })
+            const projects = listResult.user.projectsV2.nodes
+            
+            // Encontrar projeto pelo título (mais confiável que número)
+            const targetProject = projects.find(p => p.title === projectTitle)
+            
+            if (!targetProject) {
+              console.log(`Projeto "${projectTitle}" não encontrado. Projetos disponíveis:`)
+              console.log(projects.map(p => `- ${p.title} (#${p.number})`).join('\n'))
+              return
+            }
+
+            console.log(`Encontrado projeto: ${targetProject.title} (ID: ${targetProject.id})`)
+
+            // 5) Query para obter detalhes do projeto específico
+            const query = `
+              query($projectId: ID!) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
                     id
                     fields(first: 20) {
                       nodes {
@@ -67,19 +96,10 @@ jobs:
               }
             `
 
-            const result = await github.graphql(query, {
-              user: userLogin,
-              projectNumber: projectNumber
-            })
+            const result = await github.graphql(query, { projectId: targetProject.id })
+            const projectV2 = result.node
 
-            // 5) Extrair dados do JSON
-            const projectV2 = result.user.projectV2
-            if (!projectV2) {
-              console.log(`Projeto #${projectNumber} não encontrado para o usuário ${userLogin}.`)
-              return
-            }
-
-            // Restante do código permanece igual...
+            // Restante do código...
             const projectItem = projectV2.items.nodes.find(item => {
               if (item.content?.__typename === "Issue") {
                 return item.content.number == issueNumber
@@ -88,25 +108,23 @@ jobs:
             })
 
             if (!projectItem) {
-              console.log(`Não foi encontrado um item no projeto para a issue #${issueNumber}.`)
+              console.log(`Item para issue #${issueNumber} não encontrado no projeto.`)
               return
             }
-
-            const itemId = projectItem.id
 
             const statusField = projectV2.fields.nodes.find(f => f.name === statusFieldName)
             if (!statusField) {
-              console.log(`Campo "${statusFieldName}" não encontrado no projeto.`)
+              console.log(`Campo "${statusFieldName}" não encontrado. Campos disponíveis:`)
+              console.log(projectV2.fields.nodes.map(f => f.name).join(', '))
               return
             }
-            const statusFieldId = statusField.id
 
             const desiredOption = statusField.options.find(opt => opt.name === desiredOptionName)
             if (!desiredOption) {
-              console.log(`Opção "${desiredOptionName}" não existe no campo "${statusFieldName}".`)
+              console.log(`Opção "${desiredOptionName}" não encontrada. Opções disponíveis:`)
+              console.log(statusField.options.map(o => o.name).join(', '))
               return
             }
-            const desiredOptionId = desiredOption.id
 
             const mutation = `
               mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
@@ -127,11 +145,11 @@ jobs:
 
             await github.graphql(mutation, {
               projectId: projectV2.id,
-              itemId: itemId,
-              fieldId: statusFieldId,
-              optionId: desiredOptionId
+              itemId: projectItem.id,
+              fieldId: statusField.id,
+              optionId: desiredOption.id
             })
 
-            console.log(`Issue #${issueNumber} atualizada para "${desiredOptionName}" no projeto!`)
+            console.log(`Issue #${issueNumber} movida para "${desiredOptionName}" com sucesso!`)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
