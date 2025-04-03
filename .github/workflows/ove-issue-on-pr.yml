@@ -15,12 +15,11 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
-            // Configurações ajustáveis
             const config = {
-              projectTitle: "Projeto teste workflow", // Tente também variações como "Teste Workflow"
+              projectTitle: "Projeto teste workflow", // Nome exato confirmado
               statusFieldName: "Status",
               desiredOptionName: "In Review",
-              partialMatch: true // Se true, busca por projetos que CONTÊM o nome
+              partialMatch: false // Agora busca exata
             }
 
             // 1) Capturar o corpo do PR
