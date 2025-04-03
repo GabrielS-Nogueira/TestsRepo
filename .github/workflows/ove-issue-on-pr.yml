@@ -1,6 +1,5 @@
-name: Move issue card when PR is created
+name: Move issue item (Projects v2) on PR creation
 
-# Dispara no evento de criação do Pull Request
 on:
   pull_request:
     types: [opened]
@@ -9,79 +8,133 @@ jobs:
   move_issue_to_column:
     runs-on: ubuntu-latest
     steps:
-      - name: Checar código
+      - name: Check out
         uses: actions/checkout@v3
 
-      - name: Verificar e mover issue
+      - name: Move issue in new Projects
         uses: actions/github-script@v6
         with:
           script: |
-            // 1) Obtemos o corpo do Pull Request:
+            // 1) Capturar o corpo do Pull Request
             const prBody = context.payload.pull_request.body || ""
 
-            // 2) Verificamos se há alguma referência de fechamento de issue no corpo.
-            //    Exemplos possíveis: "Close #10", "Closes #10", "Fixes #15", "Resolve #25", etc.
-            //    Usaremos uma regex simples para capturar "#numero"
+            // 2) Procurar se há algo tipo "Close #10", "Closes #10", "Fixes #20", etc.
             const match = prBody.match(/\b(?:close|closes|fix|fixes|resolve|resolves)\s+#(\d+)/i)
             if (!match) {
               console.log("Nenhuma referência de fechamento de issue foi encontrada no corpo do PR.")
               return
             }
-
-            // O número da issue que será fechada
             const issueNumber = match[1]
 
-            // 3) Precisamos encontrar o 'project card' referente a essa issue.
-            //    A API de Projects (clássico) permite listar os cards de cada coluna,
-            //    mas para achar diretamente quem pertence a qual issue, podemos primeiro
-            //    listar todos os projetos do repositório ou do usuário/organização e percorrer.
-            //
-            //    Neste exemplo, assumimos que você saiba em qual projeto e coluna a issue está.
-            //    Assim, iremos percorrer as colunas do projeto atrás do card da issue.
-            //    Ajuste se você tiver mais de um projeto ou se a issue puder estar em outra coluna.
+            // 3) Configurações
+            const orgLogin = "GabrielS-Nogueira"
+            const projectNumber = 1
+            const statusFieldName = "Status"
+            const desiredOptionName = "In Review"
 
-            // ID do projeto (se souber) ou liste antes
-            // Se você só tem 1 projeto nesse repo, pode descobrir com a API ou pelo browser
-            const projectId = 1  // <--- Ajuste aqui se necessário
+            // 4) Query GraphQL para obter informações do projeto
+            const query = `
+              query($org: String!, $projectNumber: Int!) {
+                organization(login: $org) {
+                  projectV2(number: $projectNumber) {
+                    id
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                    items(first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
+                      nodes {
+                        id
+                        content {
+                          __typename
+                          ... on Issue {
+                            id
+                            number
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `
 
-            // ID da coluna de destino (já descoberto anteriormente)
-            const targetColumnId = 5  // <--- Ajuste aqui!
-
-            // 4) Listar colunas do projeto
-            const { data: columns } = await github.rest.projects.listColumns({
-              project_id: projectId
+            const result = await github.graphql(query, {
+              org: orgLogin,
+              projectNumber: projectNumber
             })
 
-            // 5) Percorrer colunas e seus cards para achar a issue
-            let cardIdToMove = null
-
-            for (const column of columns) {
-              // Listando os cards da coluna atual
-              const { data: cards } = await github.rest.projects.listCards({
-                column_id: column.id
-              })
-
-              // Encontrar o card cujo conteúdo é a issue correspondente
-              // A URL da issue (content_url) termina com "/issues/<número>"
-              const foundCard = cards.find(c => c.content_url && c.content_url.endsWith(`/issues/${issueNumber}`))
-              if (foundCard) {
-                cardIdToMove = foundCard.id
-                break
-              }
-            }
-
-            if (!cardIdToMove) {
-              console.log(`Não foi encontrado um card de projeto para a issue #${issueNumber}.`)
+            // 5) Extrair dados do JSON
+            const projectV2 = result.organization.projectV2
+            if (!projectV2) {
+              console.log(`Projeto #${projectNumber} não encontrado na org ${orgLogin}.`)
               return
             }
 
-            // 6) Mover o card para a coluna de destino
-            await github.rest.projects.moveCard({
-              card_id: cardIdToMove,
-              position: "top",         // ou "bottom"
-              column_id: targetColumnId
+            // Achar o item que corresponde à issue #X
+            const projectItem = projectV2.items.nodes.find(item => {
+              if (item.content?.__typename === "Issue") {
+                return item.content.number == issueNumber
+              }
+              return false
             })
 
-            console.log(`Issue #${issueNumber} movida para a coluna de ID ${targetColumnId} com sucesso!`)
+            if (!projectItem) {
+              console.log(`Não foi encontrado um item no projeto para a issue #${issueNumber}.`)
+              return
+            }
+
+            const itemId = projectItem.id
+
+            // Achar o campo 'Status'
+            const statusField = projectV2.fields.nodes.find(f => f.name === statusFieldName)
+            if (!statusField) {
+              console.log(`Campo "${statusFieldName}" não encontrado no projeto.`)
+              return
+            }
+            const statusFieldId = statusField.id
+
+            // Achar a opção desejada
+            const desiredOption = statusField.options.find(opt => opt.name === desiredOptionName)
+            if (!desiredOption) {
+              console.log(`Opção "${desiredOptionName}" não existe no campo "${statusFieldName}".`)
+              return
+            }
+            const desiredOptionId = desiredOption.id
+
+            // 6) Mutation GraphQL para atualizar o valor do campo
+            const mutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }
+                ) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `
+
+            await github.graphql(mutation, {
+              projectId: projectV2.id,
+              itemId: itemId,
+              fieldId: statusFieldId,
+              optionId: desiredOptionId
+            })
+
+            console.log(`Issue #${issueNumber} atualizada para "${desiredOptionName}" no projeto!`)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
