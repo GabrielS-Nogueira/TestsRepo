@@ -1,0 +1,87 @@
+name: Move issue card when PR is created
+
+# Dispara no evento de criação do Pull Request
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  move_issue_to_column:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checar código
+        uses: actions/checkout@v3
+
+      - name: Verificar e mover issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            // 1) Obtemos o corpo do Pull Request:
+            const prBody = context.payload.pull_request.body || ""
+
+            // 2) Verificamos se há alguma referência de fechamento de issue no corpo.
+            //    Exemplos possíveis: "Close #10", "Closes #10", "Fixes #15", "Resolve #25", etc.
+            //    Usaremos uma regex simples para capturar "#numero"
+            const match = prBody.match(/\b(?:close|closes|fix|fixes|resolve|resolves)\s+#(\d+)/i)
+            if (!match) {
+              console.log("Nenhuma referência de fechamento de issue foi encontrada no corpo do PR.")
+              return
+            }
+
+            // O número da issue que será fechada
+            const issueNumber = match[1]
+
+            // 3) Precisamos encontrar o 'project card' referente a essa issue.
+            //    A API de Projects (clássico) permite listar os cards de cada coluna,
+            //    mas para achar diretamente quem pertence a qual issue, podemos primeiro
+            //    listar todos os projetos do repositório ou do usuário/organização e percorrer.
+            //
+            //    Neste exemplo, assumimos que você saiba em qual projeto e coluna a issue está.
+            //    Assim, iremos percorrer as colunas do projeto atrás do card da issue.
+            //    Ajuste se você tiver mais de um projeto ou se a issue puder estar em outra coluna.
+
+            // ID do projeto (se souber) ou liste antes
+            // Se você só tem 1 projeto nesse repo, pode descobrir com a API ou pelo browser
+            const projectId = 1  // <--- Ajuste aqui se necessário
+
+            // ID da coluna de destino (já descoberto anteriormente)
+            const targetColumnId = 5  // <--- Ajuste aqui!
+
+            // 4) Listar colunas do projeto
+            const { data: columns } = await github.rest.projects.listColumns({
+              project_id: projectId
+            })
+
+            // 5) Percorrer colunas e seus cards para achar a issue
+            let cardIdToMove = null
+
+            for (const column of columns) {
+              // Listando os cards da coluna atual
+              const { data: cards } = await github.rest.projects.listCards({
+                column_id: column.id
+              })
+
+              // Encontrar o card cujo conteúdo é a issue correspondente
+              // A URL da issue (content_url) termina com "/issues/<número>"
+              const foundCard = cards.find(c => c.content_url && c.content_url.endsWith(`/issues/${issueNumber}`))
+              if (foundCard) {
+                cardIdToMove = foundCard.id
+                break
+              }
+            }
+
+            if (!cardIdToMove) {
+              console.log(`Não foi encontrado um card de projeto para a issue #${issueNumber}.`)
+              return
+            }
+
+            // 6) Mover o card para a coluna de destino
+            await github.rest.projects.moveCard({
+              card_id: cardIdToMove,
+              position: "top",         // ou "bottom"
+              column_id: targetColumnId
+            })
+
+            console.log(`Issue #${issueNumber} movida para a coluna de ID ${targetColumnId} com sucesso!`)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
