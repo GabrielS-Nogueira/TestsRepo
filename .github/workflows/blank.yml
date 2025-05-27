@@ -1,0 +1,46 @@
+# .github/workflows/conflicts.yml
+name: Check mergeability with upstream
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: write   # para comentar/avaliar a PR
+  contents: read         # checkout
+
+jobs:
+  test-merge:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout PR branch
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0           # precisamos do histórico completo
+
+    - name: Fetch base branch
+      run: |
+        git fetch origin ${{ github.event.pull_request.base.ref }}
+
+    - name: Attempt merge
+      id: merge
+      run: |
+        git checkout ${{ github.event.pull_request.head.ref }}
+        set +e
+        git merge --no-commit --no-ff origin/${{ github.event.pull_request.base.ref }}
+        echo "MERGE_EXIT_CODE=$?" >> $GITHUB_OUTPUT
+        set -e
+
+    - name: Approve or request changes
+      if: always()           # roda mesmo se o merge step falhou
+      env:
+        EXIT_CODE: ${{ steps.merge.outputs.MERGE_EXIT_CODE }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ "$EXIT_CODE" = "0" ]; then
+          gh pr review ${{ github.event.pull_request.number }} --approve -b "Merge limpo ✅"
+        else
+          gh pr review ${{ github.event.pull_request.number }} --request-changes -b "Conflitos de merge detectados ❌"
+          exit 1   # faz o job falhar ➜ status check vermelho
+        fi
